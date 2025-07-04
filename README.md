@@ -76,6 +76,7 @@ AWS VPC:          172.31.0.0/16     (public subnets)
 ### 1. Master Node Setup
 ```bash
 # Run the complete setup script
+chmod +x master-setup.sh
 ./master-setup.sh
 
 # The script will prompt for:

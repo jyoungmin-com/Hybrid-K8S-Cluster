@@ -23,9 +23,26 @@ PWD=$(pwd)
 
 sudo apt install -y unzip
 
-curl "[https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip](https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip)" -o "awscliv2.zip"
-unzip awscliv2.zip
+# Check architecture
+ARCH=$(uname -m)
+
+if [ "$ARCH" = "aarch64" ]; then
+  echo "Detected ARM64 architecture."
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+elif [ "$ARCH" = "x86_64" ]; then
+  echo "Detected x86_64 architecture."
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+else
+  echo "Unsupported architecture: $ARCH"
+  exit 1
+fi
+
+# Install AWS CLI
+unzip -q awscliv2.zip
 sudo ./aws/install
+
+# Clean up
+rm -rf aws awscliv2.zip
 
 aws configure set aws_access_key_id $AWS_ACCESS_KEY
 aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
