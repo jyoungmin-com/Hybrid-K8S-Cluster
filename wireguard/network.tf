@@ -84,7 +84,7 @@ resource "aws_eip" "eip" {
 resource "aws_security_group" "spot-sg" {
   name        = "${var.project_name}-spot-workers"
   description = "Kubernetes Spot workers"
-  vpc_id      = aws_vpc.vpc
+  vpc_id      = aws_vpc.vpc.id
   tags = {
     Name = "${var.project_name}-wireguard-sg"
     "karpenter.sh/discovery" = "hybrid-cluster"

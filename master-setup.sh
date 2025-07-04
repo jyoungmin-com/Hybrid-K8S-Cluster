@@ -2,18 +2,27 @@
 echo "Enter AWS REGION:"
 read region
 AWS_REGION=$region
+export TF_VAR_aws_region="$region"
 
 echo "Enter AWS Access Key:"
 read accesskey
 AWS_ACCESS_KEY=$accesskey
+export TF_VAR_aws_access_key="$accesskey"
 
 echo "Enter AWS Secret Access Key:"
 read secretkey
 AWS_SECRET_ACCESS_KEY=$secretkey
+export TF_VAR_aws_secret_access_key="$secretkey"
 
 echo "Enter Cluster Name:"
 read clustername
 CLUSTER_NAME=$clustername
+
+echo "EC2 Key Pair:"
+read keypair
+export TF_VAR_ec2_keypair="$keypair"
+
+
 
 PWD=$(pwd)
 
@@ -61,6 +70,17 @@ sudo apt update && sudo apt install terraform
 
 #--------------------
 
+# WireGuard Installation
+
+sudo apt-get install -y wireguard
+
+# Generate keys
+
+wg genkey | sudo tee /etc/wireguard/privatekey
+sudo cat /etc/wireguard/privatekey | wg pubkey | sudo tee /etc/wireguard/publickey
+
+export TF_VAR_master_public_key="$(sudo cat /etc/wireguard/publickey)"
+
 # WireGuard Prerequisite
 cd wireguard
 terraform init
@@ -72,7 +92,7 @@ terraform apply --auto-approve
 # DISABLE SWAP
 
 sudo swapoff -a
-sudo sed -i '/ swap / s/^(.*)$/#\1/g' /etc/fstab
+sudo sed -i '/ swap /s/^/#/' /etc/fstab
 
 
 # Load required kernel modules
@@ -120,8 +140,9 @@ sudo systemctl enable containerd
 
 # Add Kubernetes repository
 
-curl -fsSL [https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key](https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key) | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] [https://pkgs.k8s.io/core:/stable:/v1.33/deb/](https://pkgs.k8s.io/core:/stable:/v1.33/deb/) /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.33/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.33/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
 
 # Install Kubernetes components
 
@@ -133,13 +154,58 @@ sudo systemctl enable --now kubelet
 
 #--------------------
 
-# Initialize cluster with specific configuration - this will be reset
+# Configure WireGuard
 
-sudo kubeadm init 
---pod-network-cidr=10.42.0.0/16 
---service-cidr=10.96.0.0/12 
---apiserver-advertise-address=192.168.0.200 
---node-name=master-temp
+# cd $PWD/wireguard
+HUB_IP=$(terraform output -raw wireguard_eip_public_ip)
+
+for i in {1..20}; do
+  HUB_PUBLIC_KEY=$(aws ssm get-parameter \
+    --name /h8s/wireguard/hub-public-key \
+    --query Parameter.Value \
+    --output text 2>/dev/null)
+
+  if [[ -n "$HUB_PUBLIC_KEY" ]] && [[ "$HUB_PUBLIC_KEY" != "PLACEHOLDER_WILL_BE_UPDATED_BY_INSTANCE" ]]; then
+    echo "WireGuard public key retrieved successfully: $HUB_PUBLIC_KEY"
+    break
+  fi
+
+  echo "Waiting for WireGuard Hub public key to be updated..."
+  sleep 3
+done
+
+if [[ -z "$HUB_PUBLIC_KEY" ]] || [[ "$HUB_PUBLIC_KEY" == "PLACEHOLDER_WILL_BE_UPDATED_BY_INSTANCE" ]]; then
+  echo "ERROR: WireGuard Hub public key not updated after retries."
+  exit 1
+fi
+
+sudo tee /etc/wireguard/wg0.conf <<EOF
+[Interface]
+PrivateKey = $(sudo cat /etc/wireguard/privatekey)
+Address = 10.10.0.2/32
+
+[Peer]
+PublicKey = ${HUB_PUBLIC_KEY}
+Endpoint = ${HUB_IP}:51820
+AllowedIPs = 10.10.0.1/32, 10.10.0.0/24, 172.31.0.0/16, 10.42.0.0/16
+PersistentKeepalive = 25
+EOF
+
+# Enable WireGuard
+
+sudo systemctl restart wg-quick@wg0
+sudo systemctl enable --now wg-quick@wg0
+
+
+#--------------------
+
+# Initialize cluster with specific configuration
+
+sudo kubeadm init \
+  --pod-network-cidr=10.42.0.0/16 \
+  --service-cidr=10.96.0.0/12 \
+  --apiserver-advertise-address=192.168.0.200 \
+  --node-name=$CLUSTER_NAME
 
 # Configure kubectl
 
@@ -152,8 +218,8 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 # Install Tigera operator
 
-kubectl create -f [https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/operator-crds.yaml](https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/operator-crds.yaml)
-kubectl create -f [https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/tigera-operator.yaml](https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/tigera-operator.yaml)
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/operator-crds.yaml
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.30.2/manifests/tigera-operator.yaml
 
 # Create custom resources with correct CIDR
 
@@ -171,36 +237,6 @@ encapsulation: VXLANCrossSubnet
 natOutgoing: Enabled
 nodeSelector: all()
 EOF
-
-
-#--------------------
-
-# WireGuard Installation
-
-sudo apt-get install -y wireguard
-
-# Generate keys
-
-wg genkey | sudo tee /etc/wireguard/privatekey
-sudo cat /etc/wireguard/privatekey | wg pubkey | sudo tee /etc/wireguard/publickey
-
-# Configure WireGuard
-
-sudo tee /etc/wireguard/wg0.conf <<EOF
-[Interface]
-PrivateKey = $(sudo cat /etc/wireguard/privatekey)
-Address = 10.10.0.2/32
-
-[Peer]
-PublicKey = <HUB_PUBLIC_KEY>
-Endpoint = <HUB_ENDPOINT_IP>:51820
-AllowedIPs = 10.10.0.1/32
-PersistentKeepalive = 25
-EOF
-
-# Enable WireGuard
-
-sudo systemctl enable --now wg-quick@wg0
 
 
 #--------------------
@@ -289,21 +325,4 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter
 --wait
 
 
-# WireGuard VPN Setup
-cd $PWD/wireguard
-HUB_IP=$(terraform output -raw wireguard_eip_public_ip)
-HUB_PUBLIC_KEY=$(aws ssm get-parameter --name /h8s/wireguard/hub-public-key --with-decryption --query Parameter.Value --output text)
-sudo tee /etc/wireguard/wg0.conf <<EOF
-[Interface]
-Address = 10.10.0.2/24
-PrivateKey = $(sudo cat /etc/wireguard/privatekey)
-DNS = 10.10.0.1
 
-[Peer]
-PublicKey = ${HUB_PUBLIC_KEY}
-Endpoint = ${HUB_IP}:51820
-AllowedIPs = 10.10.0.0/24, 172.31.0.0/16, 10.42.0.0/16
-PersistentKeepalive = 25
-EOF
-
-sudo systemctl restart wg-quick@wg0

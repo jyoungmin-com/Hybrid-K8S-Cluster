@@ -1,0 +1,47 @@
+# ======================== Commit Message Conventions ========================
+# 1. Subject line: `<type>(<scope>): <subject>`
+#    - Use imperative mood (e.g., "add", "fix", "change", not "added" or "changes").
+#    - Keep it under 50 characters.
+#    - Do not capitalize the first letter or add a period at the end.
+#
+# 2. Available types:
+#    feat:     A new feature for the user
+#    fix:      A bug fix for the user
+#    docs:     Documentation only changes
+#    style:    Changes that do not affect the meaning of the code (formatting)
+#    refactor: A code change that neither fixes a bug nor adds a feature
+#    test:     Adding missing tests or correcting existing tests
+#    chore:    Changes to the build process or auxiliary tools
+#
+# 3. Body: Explains the "what" and "why" of the change.
+#    - Wrap lines at 72 characters for readability.
+#
+# 4. Footer: For issue linking and detailing breaking changes.
+#    - Link issues: `Resolves: #123`, `Closes: #123`
+#    - Breaking changes start with `BREAKING CHANGE:`.
+#    - Add `!` after the scope for emphasis, e.g., `feat(api)!: ...`
+# ==========================================================================
+
+
+Motivation
+# - Why was this change necessary? What problem does it solve?
+# - (e.g., To fix a critical security bug, to improve user experience.)
+
+
+Key Changes
+# - List the most important changes made in this commit.
+# - (e.g., Implemented JWT authentication on the /api/v2/users endpoint.)
+
+
+# Testing
+# - (Optional) Describe how you tested these changes to ensure they work correctly.
+# - (e.g., Unit tests for X function passed, Manual E2E testing on login flow.)
+
+
+# Resolved Issues
+# - (Optional) e.g., Closes: #45
+
+
+# Breaking Changes
+# - (Optional) If this is a breaking change, describe what broke and the migration path.
+# - Start with the words "BREAKING CHANGE:".
