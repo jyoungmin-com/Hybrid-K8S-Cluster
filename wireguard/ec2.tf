@@ -72,33 +72,3 @@ resource "aws_instance" "wireguard" {
   }
 }
 
-# Store WireGuard hub keys in AWS SSM Parameter Store
-resource "aws_ssm_parameter" "wireguard_hub_private_key" {
-  name  = "/${var.project_name}/wireguard/hub-private-key"
-  type  = "SecureString"
-  value = "PLACEHOLDER_WILL_BE_UPDATED_BY_INSTANCE"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = {
-    Name    = "${var.project_name}-wireguard-hub-private-key"
-    Project = var.project_name
-  }
-}
-
-resource "aws_ssm_parameter" "wireguard_hub_public_key" {
-  name  = "/${var.project_name}/wireguard/hub-public-key"
-  type  = "String"
-  value = "PLACEHOLDER_WILL_BE_UPDATED_BY_INSTANCE"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = {
-    Name    = "${var.project_name}-wireguard-hub-public-key"
-    Project = var.project_name
-  }
-}

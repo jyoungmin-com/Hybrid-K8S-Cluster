@@ -1,7 +1,6 @@
 variable "project_name" {
   description = "PROJECT NAME"
   type        = string
-  default     = "h8s"
 }
 
 variable "vpc_cidr" {

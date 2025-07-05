@@ -1,4 +1,10 @@
 # VARIABLES
+
+echo "Enter Project Name:"
+read project
+PROJECT_NAME=$project
+
+
 echo "Enter AWS REGION:"
 read region
 AWS_REGION=$region
@@ -19,6 +25,7 @@ aws_region = "$AWS_REGION"
 aws_access_key = "$AWS_ACCESS_KEY"
 aws_secret_access_key = "$AWS_SECRET_ACCESS_KEY"
 ec2_keypair = "$keypair"
+project_name = "$PROJECT_NAME"
 EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -161,7 +168,7 @@ print_line "STARTING - Linux kernel & Swap & Network Configuration"
 # DISABLE SWAP
 
 sudo swapoff -a
-sudo sed -i '/ swap /s/^/#/' /etc/fstab
+sudo sed -e '/swap/ s/^#*/#/' -i /etc/fstab
 
 # Load required kernel modules
 
@@ -234,7 +241,7 @@ HUB_IP=$(terraform output -raw wireguard_eip_public_ip)
 
 for i in {1..20}; do
   HUB_PUBLIC_KEY=$(aws ssm get-parameter \
-    --name /h8s/wireguard/hub-public-key \
+    --name /$PROJECT_NAME/wireguard/hub-public-key \
     --query Parameter.Value \
     --output text 2>/dev/null)
 
@@ -270,7 +277,7 @@ EOF
 NODE_HOSTNAME=$CLUSTER_NAME
 sudo hostnamectl set-hostname $NODE_HOSTNAME
 
-if ! grep -q "$NODE_HOSTNAME" /etc/hosts; then
+if ! grep -q "10.10.0.2    $NODE_HOSTNAME" /etc/hosts; then
   echo "Adding $NODE_HOSTNAME to /etc/hosts..."
   echo "10.10.0.2    $NODE_HOSTNAME" | sudo tee -a /etc/hosts
 else
@@ -475,3 +482,140 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --create-namespace \
   --values $HOME/karpenter-values.yaml \
   --wait
+
+print_line "COMPLETED - Karpenter Configuration & Installation"
+
+#--------------------
+
+print_line "STARTING - Karpenter Spot Instance NodePool & EC2NodeClass Applying"
+
+
+sudo tee $HOME/spot-nodepool.yaml <<EOF
+# spot-nodepool.yaml
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot-nodepool
+spec:
+  template:
+    spec:
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "r", "t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["2"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro", "small"]
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: spot-nodeclass
+      taints:
+        - key: "karpenter.sh/capacity-type"
+          value: "spot"
+          effect: "NoSchedule"
+  limits:
+    cpu: 1000
+    memory: 1000Gi
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 30s
+    expireAfter: 720h
+EOF
+
+cat <<EOF | envsubst | sudo tee $HOME/karpenter-nodeclass.yaml
+# spot-nodeclass.yaml
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: spot-nodeclass
+spec:
+  role: "KarpenterNodeRole-hybrid-cluster"
+  amiSelectorTerms:
+    - alias: "al2023@latest"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "hybrid-cluster"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "hybrid-cluster"
+  instanceStorePolicy: "RAID0"
+  userData: |
+    #!/bin/bash
+    # Configure WireGuard on worker nodes
+
+    # Check architecture
+    ARCH=$(uname -m)
+
+    if [ "$ARCH" = "aarch64" ]; then
+      echo "Detected ARM64 architecture."
+      curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+    elif [ "$ARCH" = "x86_64" ]; then
+      echo "Detected x86_64 architecture."
+      curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    else
+      echo "Unsupported architecture: $ARCH"
+      exit 1
+    fi
+
+    # Install AWS CLI
+    unzip -q awscliv2.zip
+    sudo ./aws/install
+
+    # Clean up
+    rm -rf aws awscliv2.zip
+    
+    
+    wg genkey | sudo tee /etc/wireguard/privatekey
+    sudo cat /etc/wireguard/privatekey | wg pubkey | sudo tee /etc/wireguard/publickey
+    
+
+
+    # WireGuard configuration
+    cat <<EOF > /etc/wireguard/wg0.conf
+    [Interface]
+    Address = 10.10.0.20/24
+    PrivateKey = <WORKER_PRIVATE_KEY>
+    DNS = 10.10.0.1
+    
+    [Peer]
+    PublicKey = <MASTER_PUBLIC_KEY>
+    AllowedIPs = 10.10.0.0/24, 10.42.0.0/16, 10.96.0.0/12, 192.168.0.0/24
+    Endpoint = <MASTER_PUBLIC_IP>:51820
+    PersistentKeepalive = 25
+    EOF
+    
+    # Enable WireGuard
+    systemctl enable --now wg-quick@wg0
+    
+    # Bootstrap Kubernetes
+    /etc/eks/bootstrap.sh hybrid-cluster \
+      --apiserver-endpoint https://10.10.0.1:6443 \
+      --b64-cluster-ca <BASE64_ENCODED_CA>
+  blockDeviceMappings:
+    - deviceName: /dev/sda1
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        deleteOnTermination: true
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  tags:
+    Environment: "hybrid"
+    ManagedBy: "karpenter"
+EOF
